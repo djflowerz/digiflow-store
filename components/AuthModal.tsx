@@ -46,7 +46,7 @@ const AuthModal: React.FC = () => {
       if (userRole === 'admin') {
           window.location.href = '/admin.html';
       } else {
-          window.location.href = '/';
+          window.location.href = '/index.html';
       }
   };
 
@@ -99,10 +99,7 @@ const AuthModal: React.FC = () => {
         else setInfo(`Password reset link sent to ${email}`);
       } else if (mode === 'signup') {
          // Standard signup (Wait for verification logic, usually email link or SMS)
-         // But basic Supabase signup returns session if email confirmation is disabled.
-         const { error, needVerification } = await signUp(email, password, '', phone); 
-         // Note: Assuming 'name' logic needs to be handled or simplified here. 
-         // For now, matching simplified file structure. 
+         const { error, needVerification, user } = await signUp(email, password, '', phone); 
          
          if (error) {
              setError(error);
@@ -110,8 +107,10 @@ const AuthModal: React.FC = () => {
              setMode('verify');
              setInfo(`Verification link/code sent.`);
              setResendCooldown(60);
+         } else if (user) {
+             // Immediate login if no verification needed (Auto-confirmed)
+             performRedirect(user.role);
          } else {
-             // Immediate login if no verification needed
              handleClose();
          }
       }
@@ -154,7 +153,7 @@ const AuthModal: React.FC = () => {
           </div>
         )}
         
-        {/* Basic Signup Inputs if mode is signup - kept simple for this component version */}
+        {/* Basic Signup Inputs */}
         {mode === 'signup' && (
           <>
              <div className="relative">
