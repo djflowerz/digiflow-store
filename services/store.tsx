@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { supabase, isSupabaseConfigured } from './supabaseClient';
 import { Product, CartItem, User, Order, Review, Category } from '../types';
-import { SUPER_ADMIN_EMAIL, CATEGORIES as INITIAL_CATEGORIES, MOCK_PRODUCTS } from '../constants';
+import { SUPER_ADMIN_EMAIL, CATEGORIES as INITIAL_CATEGORIES, MOCK_PRODUCTS, SUPABASE_URL } from '../constants';
 
 // ------------------ CART CONTEXT ------------------
 interface CartContextType {
@@ -274,7 +274,16 @@ export const AuthProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
     await supabase!.auth.signOut();
     setUser(null);
     localStorage.removeItem('digiflow_user');
-    localStorage.removeItem('sb-' + (supabase?.supabaseUrl ? new URL(supabase.supabaseUrl).hostname.split('.')[0] : '') + '-auth-token');
+    
+    if (SUPABASE_URL) {
+        try {
+            const url = new URL(SUPABASE_URL);
+            const projectRef = url.hostname.split('.')[0];
+            localStorage.removeItem('sb-' + projectRef + '-auth-token');
+        } catch (e) {
+            // ignore invalid url
+        }
+    }
     // Force refresh to clear any stale state and redirect home
     window.location.href = '/'; 
   };
