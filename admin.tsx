@@ -1,4 +1,4 @@
-import React, { PropsWithChildren, useState } from 'react';
+import React, { PropsWithChildren, useState, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
 import { AuthProvider, DataProvider, useAuth, useData } from './services/store';
 import AdminDashboard from './pages/AdminDashboard';
@@ -19,6 +19,13 @@ const AdminLayout: React.FC<PropsWithChildren> = ({ children }) => {
   const [loginError, setLoginError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
+  // Auto-set dark mode on load
+  useEffect(() => {
+    if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+        document.documentElement.classList.add('dark');
+    }
+  }, []);
+
   if (isLoading) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-gray-100 dark:bg-gray-900 text-primary-600">
@@ -38,24 +45,20 @@ const AdminLayout: React.FC<PropsWithChildren> = ({ children }) => {
     
     if (error) {
       setLoginError(error);
+      setIsLoggingIn(false);
     } else {
-      // Login successful, the useEffect or re-render will check user.role
-      // Note: If the user logs in but is NOT an admin, the UI will still show this form 
-      // but with the error below (handled by the check after this function).
+      setLoginError("Checking permissions...");
       setTimeout(() => {
-         // Small delay to allow state update. 
-         // If still here, it means role is not admin.
-         setLoginError("Login successful, but this account is not an Administrator.");
-      }, 1000);
+         setIsLoggingIn(false);
+      }, 1500);
     }
-    setIsLoggingIn(false);
   };
 
   // Auth Guard: If not admin, show dedicated Admin Login Screen
   if (!user || user.role !== 'admin') {
      return (
         <div className="min-h-screen flex flex-col items-center justify-center bg-gray-100 dark:bg-gray-900 p-4 transition-colors">
-             <div className="bg-white dark:bg-gray-800 p-8 rounded-2xl shadow-2xl max-w-md w-full border dark:border-gray-700">
+             <div className="bg-white dark:bg-gray-800 p-8 rounded-2xl shadow-2xl max-w-md w-full border dark:border-gray-700 animate-in fade-in zoom-in-95">
                  <div className="text-center mb-8">
                      <div className="w-16 h-16 bg-gradient-to-tr from-primary-600 to-primary-800 text-white rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg transform -rotate-3">
                          <Lock size={32} />
@@ -64,7 +67,6 @@ const AdminLayout: React.FC<PropsWithChildren> = ({ children }) => {
                      <p className="text-gray-500 dark:text-gray-400 mt-2">Secure access for store managers</p>
                  </div>
 
-                 {/* If logged in as user, show small notice but keep login form active */}
                  {user && (
                    <div className="mb-6 p-3 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-100 dark:border-yellow-800 rounded-lg flex items-center justify-between text-xs">
                       <span className="text-yellow-800 dark:text-yellow-200">
@@ -215,7 +217,6 @@ const AdminLayout: React.FC<PropsWithChildren> = ({ children }) => {
   );
 };
 
-// Simple Icon component for the login screen
 const ArrowLeftIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="m12 19-7-7 7-7"/>
@@ -233,7 +234,6 @@ const AdminApp: React.FC = () => {
   );
 };
 
-// Mount Root
 const rootElement = document.getElementById('root');
 if (rootElement) {
   ReactDOM.createRoot(rootElement).render(<AdminApp />);
