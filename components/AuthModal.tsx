@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../services/store';
 import { Modal, Button } from './UI';
-import { Mail, Lock, Smartphone, RefreshCcw, Clock, ArrowLeft } from 'lucide-react';
+import { Mail, Lock, Smartphone, RefreshCw, Clock, ArrowLeft, User } from 'lucide-react';
 
 const AuthModal: React.FC = () => {
   const { 
@@ -14,10 +14,13 @@ const AuthModal: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
+  
+  // Form State
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [phone, setPhone] = useState('');
   const [otp, setOtp] = useState('');
+  const [fullName, setFullName] = useState(''); // Added to ensure profiles have names
   const [resendCooldown, setResendCooldown] = useState(0);
 
   // Resend timer
@@ -31,7 +34,7 @@ const AuthModal: React.FC = () => {
 
   const resetForm = () => {
     setError(''); setInfo(''); setEmail(''); setPassword('');
-    setPhone(''); setOtp(''); setResendCooldown(0);
+    setPhone(''); setOtp(''); setFullName(''); setResendCooldown(0);
     setMode('signin'); setLoginMethod('email');
   };
 
@@ -40,9 +43,8 @@ const AuthModal: React.FC = () => {
     closeAuthModal();
   };
 
-  // Helper to handle redirect
+  // Helper to handle redirect based on role
   const performRedirect = (userRole?: string) => {
-      // Direct navigation ensures cleaner state reset
       if (userRole === 'admin') {
           window.location.href = '/admin.html';
       } else {
@@ -71,11 +73,8 @@ const AuthModal: React.FC = () => {
       if (mode === 'signin') {
         if (loginMethod === 'email') {
           const { error, user } = await signIn(email, password);
-          if (error) {
-              setError(error);
-          } else {
-              performRedirect(user?.role);
-          }
+          if (error) setError(error);
+          else performRedirect(user?.role);
         } else {
           const { error, needVerification } = await signInWithPhone(phone);
           if (error) setError(error);
@@ -88,18 +87,18 @@ const AuthModal: React.FC = () => {
       } else if (mode === 'verify') {
         const type = loginMethod === 'phone' ? 'sms' : 'signup';
         const { error, user } = await verifyOtp(loginMethod === 'phone' ? phone : email, otp, type);
-        if (error) {
-            setError(error);
-        } else {
-            performRedirect(user?.role);
-        }
+        if (error) setError(error);
+        else performRedirect(user?.role);
       } else if (mode === 'forgot') {
         const { error } = await resetPassword(email);
         if (error) setError(error);
-        else setInfo(`Password reset link sent to ${email}`);
+        else {
+            setInfo(`Password reset link sent to ${email}`);
+            setResendCooldown(60);
+        }
       } else if (mode === 'signup') {
-         // Standard signup (Wait for verification logic, usually email link or SMS)
-         const { error, needVerification, user } = await signUp(email, password, '', phone); 
+         // Pass fullName here to ensure the profile is created correctly
+         const { error, needVerification, user } = await signUp(email, password, fullName, phone); 
          
          if (error) {
              setError(error);
@@ -108,7 +107,6 @@ const AuthModal: React.FC = () => {
              setInfo(`Verification link/code sent.`);
              setResendCooldown(60);
          } else if (user) {
-             // Immediate login if no verification needed (Auto-confirmed)
              performRedirect(user.role);
          } else {
              handleClose();
@@ -148,14 +146,21 @@ const AuthModal: React.FC = () => {
           <div className="relative">
             <input type="text" placeholder="Enter OTP" value={otp} onChange={e => setOtp(e.target.value)} className="w-full p-2 border rounded text-center font-bold tracking-widest dark:bg-gray-700 dark:border-gray-600" maxLength={6} required />
             <div className="mt-2 text-sm text-gray-500 flex justify-between items-center">
-              {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : <button type="button" onClick={handleResend} className="text-primary-600 hover:underline">Resend Code</button>}
+              {resendCooldown > 0 ? (
+                  <span className="flex items-center gap-1"><Clock size={14}/> Resend in {resendCooldown}s</span>
+              ) : (
+                  <button type="button" onClick={handleResend} className="text-primary-600 hover:underline flex items-center gap-1"><RefreshCw size={14}/> Resend Code</button>
+              )}
             </div>
           </div>
         )}
         
-        {/* Basic Signup Inputs */}
         {mode === 'signup' && (
           <>
+             <div className="relative">
+              <User className="absolute left-3 top-3 text-gray-400" size={18} />
+              <input type="text" placeholder="Full Name" value={fullName} onChange={e => setFullName(e.target.value)} className="w-full pl-10 p-2 border rounded dark:bg-gray-700 dark:border-gray-600" required />
+            </div>
              <div className="relative">
               <Mail className="absolute left-3 top-3 text-gray-400" size={18} />
               <input type="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} className="w-full pl-10 p-2 border rounded dark:bg-gray-700 dark:border-gray-600" required />
@@ -169,6 +174,13 @@ const AuthModal: React.FC = () => {
               <input type="tel" placeholder="Phone (+254...)" value={phone} onChange={e => setPhone(e.target.value)} className="w-full pl-10 p-2 border rounded dark:bg-gray-700 dark:border-gray-600" required />
             </div>
           </>
+        )}
+        
+        {mode === 'forgot' && (
+            <div className="relative">
+              <Mail className="absolute left-3 top-3 text-gray-400" size={18} />
+              <input type="email" placeholder="Email Address" value={email} onChange={e => setEmail(e.target.value)} className="w-full pl-10 p-2 border rounded dark:bg-gray-700 dark:border-gray-600" required />
+            </div>
         )}
 
         <Button type="submit" className="w-full" isLoading={loading}>
