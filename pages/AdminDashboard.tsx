@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
-import { Plus, Trash, Edit, Upload, FolderPlus, X, Database, RefreshCw, Users, Search, ChevronRight } from 'lucide-react';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { Plus, Trash, Edit, Upload, Database, RefreshCw, Users, Search, Package, Layers, Settings } from 'lucide-react';
 import { useData } from '../services/store';
 import { Button, Modal, Badge } from '../components/UI';
-import { Product, Category, User, Order } from '../types';
+import { Product, User } from '../types';
 import { supabase, isSupabaseConfigured } from '../services/supabaseClient';
 
 const AdminDashboard: React.FC = () => {
@@ -31,7 +31,7 @@ const AdminDashboard: React.FC = () => {
   useEffect(() => {
       if (activeTab === 'users' && isSupabaseConfigured()) {
           setLoadingUsers(true);
-          supabase!.from('profiles').select('*').then(({ data, error }) => {
+          supabase!.from('profiles').select('*').then(({ data }) => {
               if (data) setUsers(data as any);
               setLoadingUsers(false);
           });
@@ -80,13 +80,6 @@ const AdminDashboard: React.FC = () => {
       setNewCategoryName('');
   };
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const url = URL.createObjectURL(e.target.files[0]);
-      setProductForm(prev => ({ ...prev, images: [...(prev.images || []), url] }));
-    }
-  };
-
   const addImageUrl = () => {
       setProductForm(prev => ({ ...prev, images: [...(prev.images || []), ''] }));
   };
@@ -100,14 +93,9 @@ const AdminDashboard: React.FC = () => {
   };
 
   // Analytics Data
-  const chartData = [
-    { name: 'Mon', sales: 4000 },
-    { name: 'Tue', sales: 3000 },
-    { name: 'Wed', sales: 2000 },
-    { name: 'Thu', sales: 2780 },
-    { name: 'Fri', sales: 1890 },
-    { name: 'Sat', sales: 2390 },
-    { name: 'Sun', sales: 3490 },
+  const revenueData = [
+    { name: 'Total Orders', value: orders.length },
+    { name: 'Total Revenue', value: orders.reduce((sum, o) => sum + o.total, 0) / 1000 } // Scaled down for chart
   ];
 
   return (
@@ -127,17 +115,24 @@ const AdminDashboard: React.FC = () => {
       {/* Tabs Navigation */}
       <div className="border-b dark:border-gray-700 overflow-x-auto scrollbar-hide">
         <div className="flex gap-6">
-            {['analytics', 'products', 'categories', 'orders', 'users', 'system'].map(tab => (
+            {[
+                { id: 'analytics', label: 'Analytics', icon: null },
+                { id: 'products', label: 'Products', icon: Package },
+                { id: 'orders', label: 'Orders', icon: Layers },
+                { id: 'users', label: 'Users', icon: Users },
+                { id: 'categories', label: 'Categories', icon: Layers },
+                { id: 'system', label: 'System', icon: Settings },
+            ].map(tab => (
             <button 
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={`pb-3 px-1 capitalize font-medium whitespace-nowrap transition-colors ${
-                    activeTab === tab 
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`pb-3 px-1 capitalize font-medium whitespace-nowrap transition-colors flex items-center gap-2 ${
+                    activeTab === tab.id 
                     ? 'border-b-2 border-primary-600 text-primary-600' 
                     : 'text-gray-500 hover:text-gray-800 dark:hover:text-gray-300'
                 }`}
             >
-                {tab}
+                {tab.icon && <tab.icon size={16}/>} {tab.label}
             </button>
             ))}
         </div>
@@ -166,17 +161,14 @@ const AdminDashboard: React.FC = () => {
 
            {/* Chart */}
            <div className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-sm border dark:border-gray-700 h-96">
-             <h3 className="font-bold mb-6 text-lg">Revenue Overview</h3>
+             <h3 className="font-bold mb-6 text-lg">Sales Overview</h3>
              <ResponsiveContainer width="100%" height="100%">
-               <BarChart data={chartData} margin={{ top: 0, right: 0, left: -20, bottom: 20 }}>
+               <BarChart data={revenueData} margin={{ top: 0, right: 0, left: -20, bottom: 20 }}>
                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
-                 <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#6B7280', fontSize: 12}} dy={10} />
-                 <YAxis axisLine={false} tickLine={false} tick={{fill: '#6B7280', fontSize: 12}} />
-                 <Tooltip 
-                    contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)' }}
-                    cursor={{ fill: '#F3F4F6' }}
-                 />
-                 <Bar dataKey="sales" fill="#0ea5e9" radius={[4, 4, 0, 0]} barSize={40} />
+                 <XAxis dataKey="name" axisLine={false} tickLine={false} />
+                 <YAxis axisLine={false} tickLine={false} />
+                 <Tooltip cursor={{ fill: '#F3F4F6' }} />
+                 <Bar dataKey="value" fill="#0ea5e9" radius={[4, 4, 0, 0]} barSize={60} />
                </BarChart>
              </ResponsiveContainer>
            </div>
@@ -260,7 +252,7 @@ const AdminDashboard: React.FC = () => {
                                 <th className="p-4">Role</th>
                                 <th className="p-4">Referral Code</th>
                                 <th className="p-4">Referred By</th>
-                                <th className="p-4 text-right">Referral Earnings</th>
+                                <th className="p-4 text-right">Earnings</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y dark:divide-gray-700">
@@ -282,11 +274,6 @@ const AdminDashboard: React.FC = () => {
                                     <td className="p-4 text-right font-bold text-green-600">KES {(u.referralEarnings || 0).toLocaleString()}</td>
                                 </tr>
                             ))}
-                            {users.length === 0 && (
-                                <tr>
-                                    <td colSpan={5} className="p-8 text-center text-gray-500">No users found.</td>
-                                </tr>
-                            )}
                         </tbody>
                     </table>
                 </div>
