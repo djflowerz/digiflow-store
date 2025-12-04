@@ -77,7 +77,7 @@ interface AuthContextType {
   isLoading: boolean;
   signIn: (email: string, password: string) => Promise<{ error?: string; user?: User }>;
   signInWithPhone: (phone: string) => Promise<{ error?: string; needVerification?: boolean }>;
-  signUp: (email: string, password: string, name: string, phone: string, referralCode?: string) => Promise<{ error?: string; needVerification?: boolean }>;
+  signUp: (email: string, password: string, name: string, phone: string, referralCode?: string) => Promise<{ error?: string; needVerification?: boolean; user?: User }>;
   signOut: () => Promise<void>;
   logout: () => Promise<void>; // Alias
   updateUser: (data: Partial<User>) => Promise<void>;
@@ -142,8 +142,6 @@ export const AuthProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
 
         // 2. Fallback: If DB fetch failed, construct user from Auth Session
         if (!profileData || error) {
-            console.warn("Profile fetch failed or profile missing. Using fallback.", error);
-            
             // Use passed sessionUser or fetch it
             let authUser = sessionUser;
             if (!authUser) {
@@ -177,10 +175,14 @@ export const AuthProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
         if (profileData) {
             const isSuperAdmin = profileData.email?.trim().toLowerCase() === SUPER_ADMIN_EMAIL.trim().toLowerCase();
             
-            if (isSuperAdmin && profileData.role !== 'admin') {
-                console.log("Auto-promoting Super Admin...");
+            // CRITICAL FIX: Force Admin Role LOCALLY immediately
+            if (isSuperAdmin) {
                 profileData.role = 'admin';
-                supabase!.from('profiles').update({ role: 'admin' }).eq('id', uid).then();
+                
+                // Update DB in background to persist it
+                if (profileData.id) {
+                    supabase!.from('profiles').update({ role: 'admin' }).eq('id', profileData.id).then();
+                }
             }
 
             const fullUser = {
@@ -234,6 +236,13 @@ export const AuthProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
       }
     });
     if (error) return { error: error.message };
+
+    // If session is present immediately (auto-confirm enabled), fetch user profile
+    if (data.session && data.user) {
+        const userProfile = await fetchUserProfile(data.user.id, data.user);
+        return { user: userProfile || undefined };
+    }
+
     return { needVerification: true };
   };
 
@@ -275,6 +284,7 @@ export const AuthProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
     setUser(null);
     localStorage.removeItem('digiflow_user');
     
+    // Attempt to clear Supabase local storage keys if URL is present
     if (SUPABASE_URL) {
         try {
             const url = new URL(SUPABASE_URL);
@@ -285,7 +295,7 @@ export const AuthProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
         }
     }
     // Force refresh to clear any stale state and redirect home
-    window.location.href = '/'; 
+    window.location.href = '/index.html'; 
   };
 
   const updateUser = async (data: Partial<User>) => {
