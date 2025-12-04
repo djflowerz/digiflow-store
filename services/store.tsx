@@ -1,8 +1,7 @@
-// providers/ProductionContext.tsx
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { supabase, isSupabaseConfigured } from './supabaseClient';
-import { Product, CartItem, User, Order, Review, Category } from '../types';
-import { SUPER_ADMIN_EMAIL } from '../constants';
+import { Product, CartItem, User, Order, Review, Category, Address } from '../types';
+import { SUPER_ADMIN_EMAIL, CATEGORIES as INITIAL_CATEGORIES, MOCK_PRODUCTS } from '../constants';
 
 // ------------------ CART CONTEXT ------------------
 interface CartContextType {
@@ -13,7 +12,6 @@ interface CartContextType {
   clearCart: () => void;
   cartTotal: number;
   cartCount: number;
-  syncCartWithDB: () => Promise<void>;
 }
 
 const CartContext = createContext<CartContextType | undefined>(undefined);
@@ -21,58 +19,47 @@ const CartContext = createContext<CartContextType | undefined>(undefined);
 export const CartProvider: React.FC<{children?: ReactNode}> = ({ children }) => {
   const [cart, setCart] = useState<CartItem[]>([]);
 
-  // Load cart from Supabase if user is logged in
-  const loadCart = async (userId: string) => {
-    const { data, error } = await supabase!
-      .from('carts')
-      .select('*')
-      .eq('user_id', userId);
-    if (!error && data) setCart(data.map(item => ({ ...item, quantity: item.quantity })));
-  };
+  // Load cart from localStorage
+  useEffect(() => {
+    try {
+      const savedCart = localStorage.getItem('digiflow_cart');
+      if (savedCart) setCart(JSON.parse(savedCart));
+    } catch (e) {
+      console.error("Failed to parse cart", e);
+    }
+  }, []);
 
-  const addToCart = async (product: Product) => {
+  // Save cart to localStorage
+  useEffect(() => {
+    localStorage.setItem('digiflow_cart', JSON.stringify(cart));
+  }, [cart]);
+
+  const addToCart = (product: Product) => {
     setCart(prev => {
       const existing = prev.find(item => item.id === product.id);
-      if (existing) return prev.map(item => item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item);
+      if (existing) {
+        return prev.map(item => item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item);
+      }
       return [...prev, { ...product, quantity: 1 }];
     });
-    if (isSupabaseConfigured() && supabase.auth.user()) {
-      await supabase!.from('carts').upsert({ ...product, user_id: supabase.auth.user()?.id, quantity: 1 });
-    }
   };
 
-  const removeFromCart = async (productId: string) => {
+  const removeFromCart = (productId: string) => {
     setCart(prev => prev.filter(item => item.id !== productId));
-    if (isSupabaseConfigured() && supabase.auth.user()) {
-      await supabase!.from('carts').delete().eq('id', productId).eq('user_id', supabase.auth.user()?.id);
-    }
   };
 
-  const updateQuantity = async (productId: string, quantity: number) => {
+  const updateQuantity = (productId: string, quantity: number) => {
     if (quantity < 1) return removeFromCart(productId);
     setCart(prev => prev.map(item => item.id === productId ? { ...item, quantity } : item));
-    if (isSupabaseConfigured() && supabase.auth.user()) {
-      await supabase!.from('carts').update({ quantity }).eq('id', productId).eq('user_id', supabase.auth.user()?.id);
-    }
   };
 
-  const clearCart = async () => {
-    setCart([]);
-    if (isSupabaseConfigured() && supabase.auth.user()) {
-      await supabase!.from('carts').delete().eq('user_id', supabase.auth.user()?.id);
-    }
-  };
+  const clearCart = () => setCart([]);
 
-  const syncCartWithDB = async () => {
-    const user = supabase.auth.user();
-    if (user) await loadCart(user.id);
-  };
-
-  const cartTotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
+  const cartTotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
   const cartCount = cart.reduce((sum, item) => sum + item.quantity, 0);
 
   return (
-    <CartContext.Provider value={{ cart, addToCart, removeFromCart, updateQuantity, clearCart, cartTotal, cartCount, syncCartWithDB }}>
+    <CartContext.Provider value={{ cart, addToCart, removeFromCart, updateQuantity, clearCart, cartTotal, cartCount }}>
       {children}
     </CartContext.Provider>
   );
@@ -90,12 +77,16 @@ interface AuthContextType {
   isLoading: boolean;
   signIn: (email: string, password: string) => Promise<{ error?: string }>;
   signInWithPhone: (phone: string) => Promise<{ error?: string; needVerification?: boolean }>;
-  signUp: (email: string, password: string, name: string, phone: string, referralCode?: string) => Promise<{ error?: string }>;
+  signUp: (email: string, password: string, name: string, phone: string, referralCode?: string) => Promise<{ error?: string; needVerification?: boolean }>;
   signOut: () => Promise<void>;
+  logout: () => Promise<void>; // Alias
   updateUser: (data: Partial<User>) => Promise<void>;
   verifyOtp: (identifier: string, token: string, type: 'signup' | 'recovery' | 'magiclink' | 'sms') => Promise<{ error?: string }>;
-  resendOtp: (identifier: string, type?: 'signup' | 'sms') => Promise<{ error?: string }>;
+  resendOtp: (identifier: string, type?: 'signup' | 'sms') => Promise<{ error?: string; message?: string }>;
   resetPassword: (email: string) => Promise<{ error?: string }>;
+  isAuthModalOpen: boolean;
+  openAuthModal: () => void;
+  closeAuthModal: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -103,17 +94,31 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export const AuthProvider: React.FC<{children?: ReactNode}> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
 
   useEffect(() => {
     const initAuth = async () => {
-      if (!isSupabaseConfigured()) return setIsLoading(false);
+      if (!isSupabaseConfigured()) {
+          console.warn("Supabase not configured.");
+          setIsLoading(false);
+          return;
+      }
 
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user) await fetchUserProfile(session.user.id);
+      const { data: { session } } = await supabase!.auth.getSession();
+      if (session?.user) {
+          await fetchUserProfile(session.user.id);
+      } else {
+          setIsLoading(false);
+      }
 
-      const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-        if (event === 'SIGNED_IN' && session?.user) await fetchUserProfile(session.user.id);
-        if (event === 'SIGNED_OUT') setUser(null);
+      const { data: { subscription } } = supabase!.auth.onAuthStateChange(async (event, session) => {
+        if (event === 'SIGNED_IN' && session?.user) {
+            await fetchUserProfile(session.user.id);
+        }
+        if (event === 'SIGNED_OUT') {
+            setUser(null);
+            localStorage.removeItem('digiflow_user');
+        }
       });
 
       return () => subscription.unsubscribe();
@@ -122,31 +127,71 @@ export const AuthProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
   }, []);
 
   const fetchUserProfile = async (uid: string) => {
-    const { data: profile, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', uid)
-      .single();
-    if (error) console.error(error);
-    else setUser(profile);
+    try {
+        let { data: profile, error } = await supabase!
+        .from('profiles')
+        .select('*')
+        .eq('id', uid)
+        .single();
+        
+        // Handle Auto-Promotion for Super Admin
+        if (profile && profile.email?.toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase() && profile.role !== 'admin') {
+            await supabase!.from('profiles').update({ role: 'admin' }).eq('id', uid);
+            profile.role = 'admin';
+        }
+
+        // Handle Missing Profile (create on fly)
+        if (error && error.code === 'PGRST116') {
+             const { data: { user: authUser } } = await supabase!.auth.getUser();
+             if (authUser) {
+                 const newProfile = {
+                     id: authUser.id,
+                     email: authUser.email,
+                     fullName: authUser.user_metadata.full_name || 'User',
+                     role: authUser.email?.toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase() ? 'admin' : 'user',
+                     phone: authUser.user_metadata.phone || authUser.phone || '',
+                     referralCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
+                     addresses: [],
+                     wishlist: []
+                 };
+                 const { error: insertErr } = await supabase!.from('profiles').insert(newProfile);
+                 if (!insertErr) profile = newProfile;
+             }
+        }
+
+        if (profile) {
+            setUser({
+                ...profile,
+                addresses: profile.addresses || [],
+                wishlist: profile.wishlist || []
+            });
+        }
+    } catch (e) {
+        console.error("Profile Fetch Error", e);
+    } finally {
+        setIsLoading(false);
+    }
   };
 
   const signIn = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (!isSupabaseConfigured()) return { error: "Supabase not connected" };
+    const { error } = await supabase!.auth.signInWithPassword({ email, password });
     if (error) return { error: error.message };
     return {};
   };
 
   const signInWithPhone = async (phone: string) => {
     let formatted = phone.replace(/\D/g, '');
-    if (!formatted.startsWith('254')) formatted = '254' + formatted.slice(-9);
-    const { error } = await supabase.auth.signInWithOtp({ phone: '+' + formatted });
+    if (formatted.startsWith('0')) formatted = '254' + formatted.substring(1);
+    if (!formatted.startsWith('254')) formatted = '254' + formatted; // Default to KE
+
+    const { error } = await supabase!.auth.signInWithOtp({ phone: '+' + formatted });
     if (error) return { error: error.message };
     return { needVerification: true };
   };
 
   const signUp = async (email: string, password: string, name: string, phone: string, referralCode?: string) => {
-    const { data, error } = await supabase.auth.signUp({
+    const { data, error } = await supabase!.auth.signUp({
       email,
       password,
       options: {
@@ -155,50 +200,54 @@ export const AuthProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
       }
     });
     if (error) return { error: error.message };
-    return {};
+    return { needVerification: true };
   };
 
   const verifyOtp = async (identifier: string, token: string, type: 'signup' | 'recovery' | 'magiclink' | 'sms') => {
     const params: any = { token, type };
     if (type === 'sms') params.phone = identifier;
     else params.email = identifier;
-    const { error } = await supabase.auth.verifyOtp(params);
+    const { error } = await supabase!.auth.verifyOtp(params);
     if (error) return { error: error.message };
     return {};
   };
 
   const resendOtp = async (identifier: string, type: 'signup' | 'sms' = 'signup') => {
     if (type === 'sms') {
-      const { error } = await supabase.auth.signInWithOtp({ phone: identifier });
+      const { error } = await supabase!.auth.signInWithOtp({ phone: identifier });
       if (error) return { error: error.message };
     } else {
-      const { error } = await supabase.auth.resend({ type: 'signup', email: identifier });
+      const { error } = await supabase!.auth.resend({ type: 'signup', email: identifier });
       if (error) return { error: error.message };
     }
-    return {};
+    return { message: 'Sent' };
   };
 
   const resetPassword = async (email: string) => {
-    const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin + '/#/profile?reset=true' });
+    const { error } = await supabase!.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin + '/#/profile?reset=true' });
     if (error) return { error: error.message };
     return {};
   };
 
   const signOut = async () => {
-    await supabase.auth.signOut();
+    await supabase!.auth.signOut();
     setUser(null);
+    localStorage.removeItem('digiflow_user');
   };
 
   const updateUser = async (data: Partial<User>) => {
     if (!user) return;
     const updated = { ...user, ...data };
     setUser(updated);
-    const { error } = await supabase.from('profiles').update(data).eq('id', user.id);
-    if (error) console.error(error);
+    const { error } = await supabase!.from('profiles').update(data).eq('id', user.id);
+    if (error) console.error("Update User Error", error);
   };
 
   return (
-    <AuthContext.Provider value={{ user, isLoading, signIn, signInWithPhone, signUp, signOut, updateUser, verifyOtp, resendOtp, resetPassword }}>
+    <AuthContext.Provider value={{ 
+        user, isLoading, signIn, signInWithPhone, signUp, signOut, logout: signOut, updateUser, verifyOtp, resendOtp, resetPassword,
+        isAuthModalOpen, openAuthModal: () => setIsAuthModalOpen(true), closeAuthModal: () => setIsAuthModalOpen(false)
+    }}>
       {children}
     </AuthContext.Provider>
   );
@@ -221,18 +270,21 @@ interface DataContextType {
   addProduct: (product: Product) => Promise<void>;
   updateProduct: (product: Product) => Promise<void>;
   deleteProduct: (id: string) => Promise<void>;
+  addCategory: (category: Category) => Promise<void>;
+  deleteCategory: (id: string) => Promise<void>;
   addOrder: (order: Order) => Promise<void>;
   updateOrder: (orderId: string, status: Order['status']) => Promise<void>;
   toggleWishlist: (productId: string) => Promise<void>;
   addReview: (productId: string, review: Review) => Promise<void>;
   subscribeToNewsletter: (email: string) => Promise<boolean>;
+  seedDatabase: () => Promise<void>;
 }
 
 const DataContext = createContext<DataContextType | undefined>(undefined);
 
 export const DataProvider: React.FC<{children?: ReactNode}> = ({ children }) => {
   const [products, setProducts] = useState<Product[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
+  const [categories, setCategories] = useState<Category[]>(INITIAL_CATEGORIES);
   const [orders, setOrders] = useState<Order[]>([]);
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [isDataLoading, setIsDataLoading] = useState(true);
@@ -241,21 +293,42 @@ export const DataProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
   useEffect(() => {
     const loadData = async () => {
       setIsDataLoading(true);
-      if (!isSupabaseConfigured()) return setIsDataLoading(false);
+      if (!isSupabaseConfigured()) {
+          setIsDataLoading(false);
+          return;
+      }
 
-      const { data: cats } = await supabase.from('categories').select('*');
-      if (cats) setCategories(cats);
+      const { data: cats } = await supabase!.from('categories').select('*');
+      if (cats && cats.length > 0) setCategories([{ id: 'all', name: 'All Products' }, ...cats]);
 
-      const { data: prods } = await supabase.from('products').select('*');
-      if (prods) setProducts(prods);
+      const { data: prods } = await supabase!.from('products').select('*');
+      if (prods) {
+          // Fix missing images visual bug
+          const fixedProds = prods.map((p: any) => ({
+             ...p,
+             images: (p.images && p.images.length > 0) ? p.images : [`https://picsum.photos/500/500?random=${p.id}`]
+          }));
+          setProducts(fixedProds as any);
+      }
 
       if (user) {
-        const { data: ords } = await supabase.from('orders').select('*').eq('user_id', user.id).order('date', { ascending: false });
-        if (ords) setOrders(ords);
+        // Admin sees all, User sees own
+        let query = supabase!.from('orders').select('*').order('date', { ascending: false });
+        if (user.role !== 'admin') {
+            query = query.eq('userId', user.id);
+        }
+        const { data: ords } = await query;
+        if (ords) setOrders(ords as any);
       }
       setIsDataLoading(false);
     };
     loadData();
+
+    // Theme logic
+    if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+        setIsDarkMode(true);
+        document.documentElement.classList.add('dark');
+    }
   }, [user]);
 
   const toggleTheme = () => {
@@ -270,35 +343,45 @@ export const DataProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
 
   const addProduct = async (product: Product) => {
     setProducts(prev => [...prev, product]);
-    await supabase.from('products').insert(product);
+    await supabase!.from('products').insert(product);
   };
 
   const updateProduct = async (product: Product) => {
     setProducts(prev => prev.map(p => p.id === product.id ? product : p));
-    await supabase.from('products').update(product).eq('id', product.id);
+    await supabase!.from('products').update(product).eq('id', product.id);
   };
 
   const deleteProduct = async (id: string) => {
     setProducts(prev => prev.filter(p => p.id !== id));
-    await supabase.from('products').delete().eq('id', id);
+    await supabase!.from('products').delete().eq('id', id);
+  };
+
+  const addCategory = async (category: Category) => {
+      setCategories(prev => [...prev, category]);
+      await supabase!.from('categories').insert(category);
+  };
+
+  const deleteCategory = async (id: string) => {
+      setCategories(prev => prev.filter(c => c.id !== id));
+      await supabase!.from('categories').delete().eq('id', id);
   };
 
   const addOrder = async (order: Order) => {
     setOrders(prev => [order, ...prev]);
-    await supabase.from('orders').insert(order);
+    await supabase!.from('orders').insert(order);
 
     // Reduce stock
     for (const item of order.items) {
       const product = products.find(p => p.id === item.id);
       if (product) {
-        await supabase.from('products').update({ stock: product.stock - item.quantity }).eq('id', item.id);
+        await supabase!.from('products').update({ stock: Math.max(0, product.stock - item.quantity) }).eq('id', item.id);
       }
     }
   };
 
   const updateOrder = async (orderId: string, status: Order['status']) => {
     setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status } : o));
-    await supabase.from('orders').update({ status }).eq('id', orderId);
+    await supabase!.from('orders').update({ status }).eq('id', orderId);
   };
 
   const toggleWishlist = async (productId: string) => {
@@ -318,12 +401,38 @@ export const DataProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
   };
 
   const subscribeToNewsletter = async (email: string) => {
-    const { error } = await supabase.from('subscribers').insert({ email });
+    const { error } = await supabase!.from('subscribers').insert({ email });
     return !error;
   };
 
+  const seedDatabase = async () => {
+      // Helper to populate DB if empty
+      try {
+          // Upload Categories
+          const cats = INITIAL_CATEGORIES.filter(c => c.id !== 'all');
+          await supabase!.from('categories').upsert(cats, { onConflict: 'id' });
+
+          // Upload Products
+          const prods = MOCK_PRODUCTS.map(p => ({
+              ...p,
+              reviews: [],
+              images: p.images || ['https://picsum.photos/500/500']
+          }));
+          await supabase!.from('products').upsert(prods, { onConflict: 'id' });
+          
+          alert("Database seeded! Refresh page.");
+      } catch (e) {
+          console.error(e);
+          alert("Seeding failed check console");
+      }
+  };
+
   return (
-    <DataContext.Provider value={{ products, categories, orders, isDarkMode, isDataLoading, toggleTheme, addProduct, updateProduct, deleteProduct, addOrder, updateOrder, toggleWishlist, addReview, subscribeToNewsletter }}>
+    <DataContext.Provider value={{ 
+        products, categories, orders, isDarkMode, isDataLoading, toggleTheme, 
+        addProduct, updateProduct, deleteProduct, addCategory, deleteCategory, 
+        addOrder, updateOrder, toggleWishlist, addReview, subscribeToNewsletter, seedDatabase
+    }}>
       {children}
     </DataContext.Provider>
   );
