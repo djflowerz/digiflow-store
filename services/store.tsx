@@ -106,18 +106,20 @@ export const AuthProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
 
       const { data: { session } } = await supabase!.auth.getSession();
       if (session?.user) {
-          await fetchUserProfile(session.user.id);
+          // Pass the session user directly to avoid extra network calls or failures
+          await fetchUserProfile(session.user.id, session.user);
       } else {
           setIsLoading(false);
       }
 
       const { data: { subscription } } = supabase!.auth.onAuthStateChange(async (event, session) => {
         if (event === 'SIGNED_IN' && session?.user) {
-            await fetchUserProfile(session.user.id);
+            await fetchUserProfile(session.user.id, session.user);
         }
         if (event === 'SIGNED_OUT') {
             setUser(null);
             localStorage.removeItem('digiflow_user');
+            setIsLoading(false);
         }
       });
 
@@ -126,76 +128,80 @@ export const AuthProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
     initAuth();
   }, []);
 
-  const fetchUserProfile = async (uid: string) => {
+  const fetchUserProfile = async (uid: string, sessionUser?: any) => {
     try {
-        let { data: profile, error } = await supabase!
+        let profileData = null;
+        
+        // 1. Try to get profile from DB
+        const { data: profile, error } = await supabase!
         .from('profiles')
         .select('*')
         .eq('id', uid)
         .single();
         
-        // Handle Auto-Promotion for Super Admin
-        if (profile && profile.email?.toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase() && profile.role !== 'admin') {
-            await supabase!.from('profiles').update({ role: 'admin' }).eq('id', uid);
-            profile.role = 'admin';
-        }
+        profileData = profile;
 
-        // Handle Missing Profile (create on fly if possible)
-        if (error && error.code === 'PGRST116') {
-             const { data: { user: authUser } } = await supabase!.auth.getUser();
-             if (authUser) {
+        // 2. Fallback: If DB fetch failed, construct user from Auth Session
+        // This is critical to prevent "login loops" where user is auth'd but profile is missing
+        if (!profileData || error) {
+            console.warn("Profile fetch failed or profile missing. Using fallback.", error);
+            
+            // Use passed sessionUser or fetch it
+            let authUser = sessionUser;
+            if (!authUser) {
+                const { data } = await supabase!.auth.getUser();
+                authUser = data.user;
+            }
+            
+            if (authUser && authUser.id === uid) {
                  const newProfile = {
                      id: authUser.id,
-                     email: authUser.email,
-                     fullName: authUser.user_metadata.full_name || 'User',
+                     email: authUser.email || '',
+                     fullName: authUser.user_metadata?.full_name || 'User',
                      role: authUser.email?.toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase() ? 'admin' : 'user',
-                     phone: authUser.user_metadata.phone || authUser.phone || '',
+                     phone: authUser.phone || authUser.user_metadata?.phone || '',
                      referralCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
                      addresses: [],
                      wishlist: []
                  };
-                 // Try to insert new profile
-                 const { error: insertErr } = await supabase!.from('profiles').insert(newProfile);
-                 if (!insertErr) profile = newProfile;
-                 else console.error("Profile creation failed", insertErr);
-             }
-        }
 
-        if (profile) {
-            setUser({
-                ...profile,
-                addresses: profile.addresses || [],
-                wishlist: profile.wishlist || []
-            });
-        } else {
-            // FALLBACK: If profile fetch failed completely (e.g. table missing or RLS error),
-            // still log the user in with basic auth data so they aren't stuck.
-            const { data: { user: authUser } } = await supabase!.auth.getUser();
-            if (authUser && authUser.id === uid) {
-                console.warn("Using fallback auth user data - profile unavailable");
-                setUser({
-                     id: authUser.id,
-                     email: authUser.email || '',
-                     fullName: authUser.user_metadata.full_name || 'User',
-                     role: authUser.email?.toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase() ? 'admin' : 'user',
-                     phone: authUser.phone || '',
-                     addresses: [],
-                     wishlist: [],
-                     referralCode: '',
-                     referralEarnings: 0,
-                     referralCount: 0
-                });
+                 // Attempt to self-heal (create profile) in background if table exists
+                 if (error?.code === 'PGRST116') { // Row not found
+                     supabase!.from('profiles').insert(newProfile).then(({ error: insertError }) => {
+                         if (insertError) console.error("Auto-create profile failed:", insertError);
+                     });
+                 }
+                 profileData = newProfile;
             }
         }
+
+        // 3. Set User State
+        if (profileData) {
+            // Force Admin check one more time just in case DB is stale or role column is wrong
+            if (profileData.email?.toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase() && profileData.role !== 'admin') {
+                profileData.role = 'admin';
+                // Try to update DB in background
+                supabase!.from('profiles').update({ role: 'admin' }).eq('id', uid).then();
+            }
+
+            setUser({
+                ...profileData,
+                addresses: profileData.addresses || [],
+                wishlist: profileData.wishlist || [],
+                referralCount: profileData.referralCount || 0,
+                referralEarnings: profileData.referralEarnings || 0
+            });
+        }
+
     } catch (e) {
-        console.error("Profile Fetch Error", e);
+        console.error("Critical Profile Fetch Exception", e);
     } finally {
         setIsLoading(false);
     }
   };
 
   const signIn = async (email: string, password: string) => {
-    if (!isSupabaseConfigured()) return { error: "Supabase not connected. Check console for details." };
+    if (!isSupabaseConfigured()) return { error: "Supabase not connected." };
     const { error } = await supabase!.auth.signInWithPassword({ email, password });
     if (error) return { error: error.message };
     return {};
@@ -204,7 +210,7 @@ export const AuthProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
   const signInWithPhone = async (phone: string) => {
     let formatted = phone.replace(/\D/g, '');
     if (formatted.startsWith('0')) formatted = '254' + formatted.substring(1);
-    if (!formatted.startsWith('254')) formatted = '254' + formatted; // Default to KE
+    if (!formatted.startsWith('254')) formatted = '254' + formatted;
 
     const { error } = await supabase!.auth.signInWithOtp({ phone: '+' + formatted });
     if (error) return { error: error.message };
@@ -230,6 +236,9 @@ export const AuthProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
     else params.email = identifier;
     const { error } = await supabase!.auth.verifyOtp(params);
     if (error) return { error: error.message };
+    // After verification, fetch profile immediately
+    const { data: { user } } = await supabase!.auth.getUser();
+    if (user) await fetchUserProfile(user.id, user);
     return {};
   };
 
@@ -260,8 +269,7 @@ export const AuthProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
     if (!user) return;
     const updated = { ...user, ...data };
     setUser(updated);
-    // Only try to update DB if we have a real profile, otherwise just local state update
-    if (user.referralCode || user.role) {
+    if (user.id) {
         const { error } = await supabase!.from('profiles').update(data).eq('id', user.id);
         if (error) console.error("Update User Error", error);
     }
@@ -312,7 +320,7 @@ export const DataProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
   const [orders, setOrders] = useState<Order[]>([]);
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [isDataLoading, setIsDataLoading] = useState(true);
-  const { user, updateUser } = useAuth();
+  const { user } = useAuth();
 
   useEffect(() => {
     const loadData = async () => {
@@ -430,20 +438,16 @@ export const DataProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
   };
 
   const seedDatabase = async () => {
-      // Helper to populate DB if empty
       try {
-          // Upload Categories
           const cats = INITIAL_CATEGORIES.filter(c => c.id !== 'all');
           await supabase!.from('categories').upsert(cats, { onConflict: 'id' });
 
-          // Upload Products
           const prods = MOCK_PRODUCTS.map(p => ({
               ...p,
               reviews: [],
               images: p.images || ['https://picsum.photos/500/500']
           }));
           await supabase!.from('products').upsert(prods, { onConflict: 'id' });
-          
           alert("Database seeded! Refresh page.");
       } catch (e) {
           console.error(e);
