@@ -1,21 +1,24 @@
 import { createClient } from '@supabase/supabase-js';
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from '../constants';
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+// Clean keys to prevent whitespace issues
+const supabaseUrl = (SUPABASE_URL || "").trim();
+const supabaseKey = (SUPABASE_ANON_KEY || "").trim();
 
-const isValidConfig =
-  SUPABASE_URL &&
-  SUPABASE_URL.startsWith('https') &&
-  SUPABASE_ANON_KEY;
+// Initialize Supabase client
+// Ensure we have valid keys before initializing
+const isValidConfig = supabaseUrl.startsWith('http') && supabaseKey.length > 0;
 
-export const supabase = isValidConfig
-  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-      auth: {
-        persistSession: true,
-        autoRefreshToken: true,
-        detectSessionInUrl: true,
-      },
-    })
+if (!isValidConfig) {
+  console.error("Digiflow Error: Supabase keys are missing or invalid in constants.ts", { 
+    url: supabaseUrl, 
+    hasKey: supabaseKey.length > 0 
+  });
+}
+
+export const supabase = isValidConfig 
+  ? createClient(supabaseUrl, supabaseKey)
   : null;
 
+// Helper to check if Supabase is configured
 export const isSupabaseConfigured = () => !!supabase;
