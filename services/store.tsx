@@ -140,7 +140,7 @@ export const AuthProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
             profile.role = 'admin';
         }
 
-        // Handle Missing Profile (create on fly)
+        // Handle Missing Profile (create on fly if possible)
         if (error && error.code === 'PGRST116') {
              const { data: { user: authUser } } = await supabase!.auth.getUser();
              if (authUser) {
@@ -154,8 +154,10 @@ export const AuthProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
                      addresses: [],
                      wishlist: []
                  };
+                 // Try to insert new profile
                  const { error: insertErr } = await supabase!.from('profiles').insert(newProfile);
                  if (!insertErr) profile = newProfile;
+                 else console.error("Profile creation failed", insertErr);
              }
         }
 
@@ -165,6 +167,25 @@ export const AuthProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
                 addresses: profile.addresses || [],
                 wishlist: profile.wishlist || []
             });
+        } else {
+            // FALLBACK: If profile fetch failed completely (e.g. table missing or RLS error),
+            // still log the user in with basic auth data so they aren't stuck.
+            const { data: { user: authUser } } = await supabase!.auth.getUser();
+            if (authUser && authUser.id === uid) {
+                console.warn("Using fallback auth user data - profile unavailable");
+                setUser({
+                     id: authUser.id,
+                     email: authUser.email || '',
+                     fullName: authUser.user_metadata.full_name || 'User',
+                     role: authUser.email?.toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase() ? 'admin' : 'user',
+                     phone: authUser.phone || '',
+                     addresses: [],
+                     wishlist: [],
+                     referralCode: '',
+                     referralEarnings: 0,
+                     referralCount: 0
+                });
+            }
         }
     } catch (e) {
         console.error("Profile Fetch Error", e);
@@ -174,7 +195,7 @@ export const AuthProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
   };
 
   const signIn = async (email: string, password: string) => {
-    if (!isSupabaseConfigured()) return { error: "Supabase not connected" };
+    if (!isSupabaseConfigured()) return { error: "Supabase not connected. Check console for details." };
     const { error } = await supabase!.auth.signInWithPassword({ email, password });
     if (error) return { error: error.message };
     return {};
@@ -239,8 +260,11 @@ export const AuthProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
     if (!user) return;
     const updated = { ...user, ...data };
     setUser(updated);
-    const { error } = await supabase!.from('profiles').update(data).eq('id', user.id);
-    if (error) console.error("Update User Error", error);
+    // Only try to update DB if we have a real profile, otherwise just local state update
+    if (user.referralCode || user.role) {
+        const { error } = await supabase!.from('profiles').update(data).eq('id', user.id);
+        if (error) console.error("Update User Error", error);
+    }
   };
 
   return (
