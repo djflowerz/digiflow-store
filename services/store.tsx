@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { supabase, isSupabaseConfigured } from './supabaseClient';
-import { Product, CartItem, User, Order, Review, Category, Address } from '../types';
+import { Product, CartItem, User, Order, Review, Category } from '../types';
 import { SUPER_ADMIN_EMAIL, CATEGORIES as INITIAL_CATEGORIES, MOCK_PRODUCTS } from '../constants';
 
 // ------------------ CART CONTEXT ------------------
@@ -75,13 +75,13 @@ export const useCart = () => {
 interface AuthContextType {
   user: User | null;
   isLoading: boolean;
-  signIn: (email: string, password: string) => Promise<{ error?: string }>;
+  signIn: (email: string, password: string) => Promise<{ error?: string; user?: User }>;
   signInWithPhone: (phone: string) => Promise<{ error?: string; needVerification?: boolean }>;
   signUp: (email: string, password: string, name: string, phone: string, referralCode?: string) => Promise<{ error?: string; needVerification?: boolean }>;
   signOut: () => Promise<void>;
   logout: () => Promise<void>; // Alias
   updateUser: (data: Partial<User>) => Promise<void>;
-  verifyOtp: (identifier: string, token: string, type: 'signup' | 'recovery' | 'magiclink' | 'sms') => Promise<{ error?: string }>;
+  verifyOtp: (identifier: string, token: string, type: 'signup' | 'recovery' | 'magiclink' | 'sms') => Promise<{ error?: string; user?: User }>;
   resendOtp: (identifier: string, type?: 'signup' | 'sms') => Promise<{ error?: string; message?: string }>;
   resetPassword: (email: string) => Promise<{ error?: string }>;
   isAuthModalOpen: boolean;
@@ -106,7 +106,6 @@ export const AuthProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
 
       const { data: { session } } = await supabase!.auth.getSession();
       if (session?.user) {
-          // Pass the session user directly to avoid extra network calls or failures
           await fetchUserProfile(session.user.id, session.user);
       } else {
           setIsLoading(false);
@@ -142,7 +141,6 @@ export const AuthProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
         profileData = profile;
 
         // 2. Fallback: If DB fetch failed, construct user from Auth Session
-        // This is critical to prevent "login loops" where user is auth'd but profile is missing
         if (!profileData || error) {
             console.warn("Profile fetch failed or profile missing. Using fallback.", error);
             
@@ -158,7 +156,7 @@ export const AuthProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
                      id: authUser.id,
                      email: authUser.email || '',
                      fullName: authUser.user_metadata?.full_name || 'User',
-                     role: authUser.email?.toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase() ? 'admin' : 'user',
+                     role: 'user', // Default
                      phone: authUser.phone || authUser.user_metadata?.phone || '',
                      referralCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
                      addresses: [],
@@ -175,26 +173,32 @@ export const AuthProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
             }
         }
 
-        // 3. Set User State
+        // 3. Set User State & FORCE ADMIN if email matches
         if (profileData) {
-            // Force Admin check one more time just in case DB is stale or role column is wrong
-            if (profileData.email?.toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase() && profileData.role !== 'admin') {
+            const isSuperAdmin = profileData.email?.trim().toLowerCase() === SUPER_ADMIN_EMAIL.trim().toLowerCase();
+            
+            if (isSuperAdmin && profileData.role !== 'admin') {
+                console.log("Auto-promoting Super Admin...");
                 profileData.role = 'admin';
-                // Try to update DB in background
                 supabase!.from('profiles').update({ role: 'admin' }).eq('id', uid).then();
             }
 
-            setUser({
+            const fullUser = {
                 ...profileData,
                 addresses: profileData.addresses || [],
                 wishlist: profileData.wishlist || [],
                 referralCount: profileData.referralCount || 0,
                 referralEarnings: profileData.referralEarnings || 0
-            });
+            } as User;
+
+            setUser(fullUser);
+            return fullUser;
         }
+        return null;
 
     } catch (e) {
         console.error("Critical Profile Fetch Exception", e);
+        return null;
     } finally {
         setIsLoading(false);
     }
@@ -202,9 +206,12 @@ export const AuthProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
 
   const signIn = async (email: string, password: string) => {
     if (!isSupabaseConfigured()) return { error: "Supabase not connected." };
-    const { error } = await supabase!.auth.signInWithPassword({ email, password });
+    const { data, error } = await supabase!.auth.signInWithPassword({ email, password });
     if (error) return { error: error.message };
-    return {};
+    
+    // Explicitly wait for profile fetch to determine role before returning
+    const userProfile = await fetchUserProfile(data.user.id, data.user);
+    return { user: userProfile || undefined };
   };
 
   const signInWithPhone = async (phone: string) => {
@@ -236,10 +243,14 @@ export const AuthProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
     else params.email = identifier;
     const { error } = await supabase!.auth.verifyOtp(params);
     if (error) return { error: error.message };
-    // After verification, fetch profile immediately
+    
+    // Fetch profile after verification to determine redirect
     const { data: { user } } = await supabase!.auth.getUser();
-    if (user) await fetchUserProfile(user.id, user);
-    return {};
+    let userProfile = undefined;
+    if (user) {
+        userProfile = await fetchUserProfile(user.id, user);
+    }
+    return { user: userProfile || undefined };
   };
 
   const resendOtp = async (identifier: string, type: 'signup' | 'sms' = 'signup') => {
@@ -263,6 +274,9 @@ export const AuthProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
     await supabase!.auth.signOut();
     setUser(null);
     localStorage.removeItem('digiflow_user');
+    localStorage.removeItem('sb-' + (supabase?.supabaseUrl ? new URL(supabase.supabaseUrl).hostname.split('.')[0] : '') + '-auth-token');
+    // Force refresh to clear any stale state and redirect home
+    window.location.href = '/'; 
   };
 
   const updateUser = async (data: Partial<User>) => {
@@ -320,7 +334,7 @@ export const DataProvider: React.FC<{children?: ReactNode}> = ({ children }) => 
   const [orders, setOrders] = useState<Order[]>([]);
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [isDataLoading, setIsDataLoading] = useState(true);
-  const { user } = useAuth();
+  const { user, updateUser } = useAuth();
 
   useEffect(() => {
     const loadData = async () => {
